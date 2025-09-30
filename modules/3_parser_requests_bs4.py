@@ -1,7 +1,5 @@
-# import os
 import time
 import json
-# import csv
 import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin
@@ -279,7 +277,6 @@ if __name__ == "__main__":
     # Список URL для парсингу — заміни на реальні сторінки
     PRODUCT_URLS = [
         "https://brain.com.ua/ukr/Mobilniy_telefon_Apple_iPhone_16_Pro_Max_256GB_Black_Titanium-p1145443.html",
-        "https://brain.com.ua/ukr/Mobilniy_telefon_Apple_iPhone_13_128GB_Midnight_MLPF3-p800204.html",
     ]
 
     for url in PRODUCT_URLS:
