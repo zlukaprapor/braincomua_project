@@ -172,5 +172,5 @@ for it in qs:
 python modules/1_write.py
 python modules/2_read.py
 ```
-
+playwright install chromium
 
