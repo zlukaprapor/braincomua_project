@@ -3,14 +3,12 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-
 from load_django import *
 from parser_app.models import Product
 
@@ -236,8 +234,13 @@ def parse_single_product(url, driver, timeout=12):
 
 # ------------------ Збереження в БД ------------------
 def save_to_db(product_data):
-    """Зберігає дані продукту в БД."""
-    from django.db.models import Q
+    """
+    Зберігає дані продукту в БД через Django ORM.
+    Логіка:
+    - Якщо продукт з таким кодом існує і дані не змінились → нічого не робимо.
+    - Якщо продукт з таким кодом існує, але дані змінились → оновлюємо.
+    - Якщо продукту з таким кодом немає → створюємо новий.
+    """
 
     model_fields = [f for f in Product._meta.get_fields()
                     if getattr(f, 'concrete', False) and not getattr(f, 'auto_created', False)]
@@ -287,9 +290,6 @@ def save_to_db(product_data):
 
 # ------------------ MAIN ------------------
 if __name__ == "__main__":
-    # ⚠️ ВАЖЛИВЕ НАГАДУВАННЯ:
-    # Перед запуском скрипта ОБОВ'ЯЗКОВО підберіть всі XPath вручну!
-    # Використовуйте інспектор браузера та перевіряйте в Console: $x("ваш_xpath")
 
     PRODUCT_URLS = [
         "https://brain.com.ua/ukr/Mobilniy_telefon_Apple_iPhone_15_128GB_Black-p1044347.html",

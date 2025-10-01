@@ -1,13 +1,12 @@
+from __future__ import annotations
 import time
 import json
 import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin
 import asyncio
-
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from asgiref.sync import sync_to_async
-
 from load_django import *
 from parser_app.models import Product
 
@@ -39,6 +38,12 @@ def _unique_preserve_order(seq):
             seen.add(x)
             out.append(x)
     return out
+
+
+def clean_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    return " ".join(text.split())
 
 
 # ==================== HELPERS ====================
@@ -96,7 +101,7 @@ async def parse_single_product(url, page, timeout=12000):
 
         # Чекаємо на завантаження основного контенту
         await page.wait_for_selector("xpath=//h1", timeout=timeout)
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.1)
 
         # Перехід до секції "Характеристики"
         try:
@@ -104,7 +109,7 @@ async def parse_single_product(url, page, timeout=12000):
             count = await char_link.count()
             if count > 0:
                 await char_link.click()
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
         except Exception:
             pass
 
@@ -114,9 +119,9 @@ async def parse_single_product(url, page, timeout=12000):
             count = await show_all_button.count()
             if count > 0:
                 await show_all_button.scroll_into_view_if_needed()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
                 await show_all_button.click()
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.1)
         except Exception:
             pass
 
@@ -146,7 +151,8 @@ async def parse_single_product(url, page, timeout=12000):
         product[key] = await get_text_or_none(page, xpath)
 
     # ==================== Продавець ====================
-    product["vendor"] = await get_text_or_none(page, "//div[@class='delivery-target']//strong")
+    raw_vendor = await get_text_or_none(page, "//div[@class='delivery-target']//strong")
+    product["vendor"] = clean_text(raw_vendor)
 
     # ==================== Ціна ====================
     product["price"] = await get_price_or_none(page, "//div[@class='br-pr-np']//div/span[1]")
@@ -219,7 +225,14 @@ async def parse_single_product(url, page, timeout=12000):
 # ------------------ Збереження в БД ------------------
 @sync_to_async
 def save_to_db(product_data):
-    """Зберігає дані продукту в БД."""
+    """
+    Зберігає дані продукту в БД через Django ORM.
+    Логіка:
+    - Якщо продукт з таким кодом існує і дані не змінились → нічого не робимо.
+    - Якщо продукт з таким кодом існує, але дані змінились → оновлюємо.
+    - Якщо продукту з таким кодом немає → створюємо новий.
+    """
+
     model_fields = [f for f in Product._meta.get_fields()
                     if getattr(f, 'concrete', False) and not getattr(f, 'auto_created', False)]
     field_names = {f.name: f for f in model_fields}
@@ -310,7 +323,7 @@ async def main():
 
                     print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
                     await save_to_db(data)
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
                 except Exception as e:
                     print(f"[ERROR] Помилка при обробці {url}: {e}")
                     continue

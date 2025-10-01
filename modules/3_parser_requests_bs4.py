@@ -3,14 +3,14 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin
-
 import requests
 from bs4 import BeautifulSoup
-
+from django.db.models import Q
 from load_django import *
 from parser_app.models import Product
 
-# Заголовки для requests
+# ------------------ HTTP заголовки для requests ------------------
+# Імітуємо браузер, щоб сайт не блокував запити
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -25,13 +25,16 @@ HEADERS = {
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Site': 'same-origin',
     'Sec-Fetch-User': '?1',
-    'TE': 'Trailers',  # Transfer Encoding
+    'TE': 'Trailers',
 }
 
 
 # ------------------ Утиліти ------------------
 def _parse_price(text):
-    """Витягує число з рядка і повертає Decimal або None."""
+    """
+    Витягує числове значення з рядка та перетворює його у Decimal.
+    Повертає None, якщо перетворення неможливе.
+    """
     if not text:
         return None
     m = re.search(r'[\d\s,\.]+', text)
@@ -49,6 +52,9 @@ def _parse_price(text):
 
 
 def _unique_preserve_order(seq):
+    """
+    Повертає список без дублікатів, зберігаючи порядок.
+    """
     seen = set()
     out = []
     for x in seq:
@@ -58,8 +64,11 @@ def _unique_preserve_order(seq):
     return out
 
 
-# ------------------ PARSER ------------------
+# ------------------ Основний парсер ------------------
 def parse_single_product(url, headers=HEADERS, timeout=12):
+    """
+    Парсить сторінку товару Brain.com.ua та повертає словник з даними.
+    """
     product = {}
     try:
         resp = requests.get(url, headers=headers, timeout=timeout)
@@ -70,10 +79,10 @@ def parse_single_product(url, headers=HEADERS, timeout=12):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # посилання на джерело
+    # Посилання на джерело
     product['link'] = url
 
-    # Полное название товара
+    # Назва товару
     try:
         title = soup.select_one("h1") or soup.select_one(".product-title")
         product["title"] = title.get_text(strip=True) if title else None
@@ -82,7 +91,7 @@ def parse_single_product(url, headers=HEADERS, timeout=12):
         product["title"] = None
         product["full_name"] = None
 
-    # --- collect all characteristics in dictionary ---
+    # Характеристики як словник (ключ → значення)
     characteristics = {}
     try:
         for span in soup.select(".br-pr-chr-item span"):
@@ -97,123 +106,54 @@ def parse_single_product(url, headers=HEADERS, timeout=12):
     except Exception:
         characteristics = {}
 
-    # Колір
-    try:
-        product["color"] = characteristics.get("Колір") or characteristics.get("Цвет")
-    except AttributeError:
-        product["color"] = None
+    # Основні параметри товару
+    product["color"] = characteristics.get("Колір") or characteristics.get("Цвет")
+    product["memory"] = characteristics.get("Вбудована пам'ять") or characteristics.get("Встроенная память")
+    product["article"] = characteristics.get("Артикул")
+    product["diagonal"] = characteristics.get("Діагональ екрану") or characteristics.get("Диагональ экрана")
+    product["resolution"] = characteristics.get("Роздільна здатність екрану") or characteristics.get(
+        "Разрешение дисплея")
 
-    # Объем памяти
-    try:
-        product["memory"] = characteristics.get("Вбудована пам'ять") or characteristics.get("Встроенная память")
-    except AttributeError:
-        product["memory"] = None
+    # Продавець
+    v_sel = soup.select_one(".br-pr-del-type .delivery-target strong")
+    product["vendor"] = v_sel.get_text(strip=True) if v_sel else None
 
-    # Серия
-    try:
-        product["article"] = characteristics.get("Артикул")
-    except AttributeError:
-        product["article"] = None
-
-    # Диагональ экрана
-    try:
-        product["diagonal"] = characteristics.get("Діагональ екрану") or characteristics.get("Диагональ экрана")
-    except AttributeError:
-        product["diagonal"] = None
-
-    # Разрешение дисплея
-    try:
-        product["resolution"] = characteristics.get("Роздільна здатність екрану") or characteristics.get(
-            "Разрешение дисплея")
-    except AttributeError:
-        product["resolution"] = None
-
-    # Продавец
-    try:
-        v_sel = soup.select_one(".br-pr-del-type .delivery-target strong")
-        product["vendor"] = v_sel.get_text(strip=True) if v_sel else None
-    except AttributeError:
-        product["vendor"] = None
-
-    # Цена
-    # Основна ціна
-    try:
-        p_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np > div > span")
-        product["price"] = _parse_price(p_sel.get_text(strip=True)) if p_sel else None
-    except AttributeError:
-        product["price"] = None
+    # Ціна
+    p_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np > div > span")
+    product["price"] = _parse_price(p_sel.get_text(strip=True)) if p_sel else None
 
     # Акційна ціна (якщо є)
-    try:
-        d_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np-hz > div > span")
-        discount_price = _parse_price(d_sel.get_text(strip=True)) if d_sel else None
-        product["discount_price"] = discount_price if discount_price else product["price"]
-    except AttributeError:
-        product["discount_price"] = product["price"]
+    d_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np-hz > div > span")
+    discount_price = _parse_price(d_sel.get_text(strip=True)) if d_sel else None
+    product["discount_price"] = discount_price if discount_price else product["price"]
 
-    # Все фото товара. Здесь нужно собрать ссылки на фото и сохранить в список
-    try:
-        photos = []
-        for img in soup.select("img.dots-image"):
-            src = img.get("data-big-picture-src") or img.get("src")
-            if src:
-                src = src.strip()
-                if src.startswith("//"):
-                    src = "https:" + src
-                elif src.startswith("/"):
-                    src = urljoin(url, src)
-                elif not src.startswith("http"):
-                    src = urljoin(url, src)
-                photos.append(src)
-        product["photos"] = _unique_preserve_order(photos)
-    except Exception:
-        product["photos"] = []
+    # Фото
+    photos = []
+    for img in soup.select("img.dots-image"):
+        src = img.get("data-big-picture-src") or img.get("src")
+        if src:
+            src = src.strip()
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                src = urljoin(url, src)
+            elif not src.startswith("http"):
+                src = urljoin(url, src)
+            photos.append(src)
+    product["photos"] = _unique_preserve_order(photos)
 
-    # Код товара
-    try:
-        code_sel = soup.select_one("#product_code .br-pr-code-val")
-        product["code"] = code_sel.get_text(strip=True) if code_sel else None
-    except AttributeError:
-        product["code"] = None
+    # Код товару
+    code_sel = soup.select_one("#product_code .br-pr-code-val")
+    product["code"] = code_sel.get_text(strip=True) if code_sel else None
 
-    # Кол-во отзывов
+    # Кількість відгуків
     try:
         rev_sel = soup.select_one("a.scroll-to-element span")
         product["reviews_count"] = int(rev_sel.get_text(strip=True)) if rev_sel else None
     except (AttributeError, ValueError):
         product["reviews_count"] = None
 
-    # Серия
-    # article = None
-    # for span in soup.select('.br-pr-chr-item span'):
-    #     if span.get_text(strip=True) == 'Артикул':
-    #         next_span = span.find_next_sibling('span')
-    #         if next_span:
-    #             article = next_span.get_text(strip=True)
-    #         break
-    # product['article'] = article
-
-    # Диагональ экрана
-    # diagonal = None
-    # for span in soup.select('.br-pr-chr-item span'):
-    #     if span.get_text(strip=True) == 'Діагональ екрану':
-    #         next_span = span.find_next_sibling('span')
-    #         if next_span:
-    #             diagonal = next_span.get_text(strip=True)
-    #         break
-    # product['diagonal'] = diagonal
-
-    # Разрешение дисплея
-    # resolution = None
-    # for span in soup.select('.br-pr-chr-item span'):
-    #     if span.get_text(strip=True) == 'Роздільна здатність екрану':
-    #         next_span = span.find_next_sibling('span')
-    #         if next_span:
-    #             resolution = next_span.get_text(strip=True)
-    #         break
-    # product['resolution'] = resolution
-
-    # Характеристики товара. Все характеристики на вкладке. Характеристики собрать как словарь
+    # Усі характеристики (словник)
     specifications = {}
     try:
         for item in soup.select(".br-pr-chr-item"):
@@ -233,18 +173,16 @@ def parse_single_product(url, headers=HEADERS, timeout=12):
     return product
 
 
-# ------------------ Збереження в БД (динамічно) ------------------
-
+# ------------------ Збереження в БД ------------------
 def save_to_db(product_data):
     """
-    Зберігає дані продукту в БД.
-    Якщо є продукт з таким же кодом і всі поля однакові — нічого не робимо.
-    Якщо є продукт з таким же кодом, але дані змінились — оновлюємо.
-    Якщо немає продукту з кодом — створюємо.
+    Зберігає дані продукту в БД через Django ORM.
+    Логіка:
+    - Якщо продукт з таким кодом існує і дані не змінились → нічого не робимо.
+    - Якщо продукт з таким кодом існує, але дані змінились → оновлюємо.
+    - Якщо продукту з таким кодом немає → створюємо новий.
     """
-    from django.db.models import Q
 
-    # Список полів моделі (без PK, M2M)
     model_fields = [f for f in Product._meta.get_fields()
                     if getattr(f, 'concrete', False) and not getattr(f, 'auto_created', False)]
     field_names = {f.name: f for f in model_fields}
@@ -260,33 +198,27 @@ def save_to_db(product_data):
     try:
         code = save_kwargs.get('code')
         if code:
-            # шукаємо продукт по code
             obj = Product.objects.filter(code=code).first()
             if obj:
-                # перевіряємо, чи всі поля збігаються
-                duplicate = True
-                for k, v in save_kwargs.items():
-                    if getattr(obj, k) != v:
-                        duplicate = False
-                        break
-
+                # Якщо всі поля збігаються → нічого не робимо
+                duplicate = all(getattr(obj, k) == v for k, v in save_kwargs.items())
                 if duplicate:
                     print(f"[DB] Продукт (code={code}) вже існує — не створюємо дубліката")
                     return obj
                 else:
-                    # оновлюємо
+                    # Оновлюємо поля
                     for k, v in save_kwargs.items():
                         setattr(obj, k, v)
                     obj.save()
                     print(f"[DB] Оновлено Product (code={code}) id={obj.pk}")
                     return obj
             else:
-                # створюємо новий
+                # Новий продукт
                 obj = Product.objects.create(**save_kwargs)
                 print(f"[DB] Створено Product (code={code}) id={obj.pk}")
                 return obj
         else:
-            # без коду просто створюємо новий
+            # Якщо немає коду, створюємо без нього
             obj = Product.objects.create(**save_kwargs)
             print(f"[DB] Створено Product id={obj.pk}")
             return obj
@@ -298,7 +230,6 @@ def save_to_db(product_data):
 
 # ------------------ MAIN ------------------
 if __name__ == "__main__":
-    # Список URL для парсингу — заміни на реальні сторінки
     PRODUCT_URLS = [
         "https://brain.com.ua/ukr/Mobilniy_telefon_Apple_iPhone_16_Pro_Max_256GB_Black_Titanium-p1145443.html",
     ]
@@ -311,13 +242,13 @@ if __name__ == "__main__":
                 print("[WARN] Дані не отримані")
                 continue
 
-            # Вивід у консоль (гарно)
+            # Вивід у консоль
             print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
-            # Збереження у БД (через Django ORM)
+            # Збереження у БД
             save_to_db(data)
 
-            # Будь ласка, ввічливо — невелика пауза між запитами
+            # Невелика пауза, щоб не перевантажувати сайт
             time.sleep(1.0)
         except Exception as e:
             print(f"[ERROR] Помилка при обробці {url}: {e}")
