@@ -28,6 +28,7 @@ HEADERS = {
     'TE': 'Trailers',  # Transfer Encoding
 }
 
+
 # ------------------ Утиліти ------------------
 def _parse_price(text):
     """Витягує число з рядка і повертає Decimal або None."""
@@ -46,6 +47,7 @@ def _parse_price(text):
         except Exception:
             return None
 
+
 def _unique_preserve_order(seq):
     seen = set()
     out = []
@@ -55,9 +57,9 @@ def _unique_preserve_order(seq):
             out.append(x)
     return out
 
+
 # ------------------ PARSER ------------------
 def parse_single_product(url, headers=HEADERS, timeout=12):
-
     product = {}
     try:
         resp = requests.get(url, headers=headers, timeout=timeout)
@@ -292,8 +294,6 @@ def save_to_db(product_data):
     except Exception as e:
         print(f"[ERROR] Помилка збереження в БД: {e}")
         return None
-
-
 
 
 # ------------------ MAIN ------------------

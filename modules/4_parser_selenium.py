@@ -77,138 +77,29 @@ def create_driver():
     return driver
 
 
-# ------------------ PARSER ------------------
-def parse_single_product(url, driver, timeout=12):
+# ==================== HELPERS ====================
 
-    product = {}
-
+def get_text_or_none(driver, by, locator):
+    """Повертає текст елемента або None, якщо не знайдено"""
     try:
-        driver.get(url)
-
-        # Чекаємо на завантаження основного контенту
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.XPATH, "//h1"))
-        )
-
-        time.sleep(2)
-
-        # ============ ПЕРЕХОДИМО ДО СЕКЦІЇ ХАРАКТЕРИСТИК ============
-        try:
-            # Знаходимо посилання "Характеристики"
-            char_link = driver.find_element(By.XPATH, "//a[@href='#br-characteristics']")
-            driver.execute_script("arguments[0].click();", char_link)
-            time.sleep(1)
-        except Exception as e:
-            print(f"[WARN] Не вдалось перейти до характеристик: {e}")
-
-        # ============ РОЗГОРТАЄМО ВСІ ХАРАКТЕРИСТИКИ ============
-        try:
-            show_all_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CLASS_NAME, "br-prs-button"))
-            )
-
-            # Прокручуємо до кнопки
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", show_all_button)
-            time.sleep(0.5)
-
-            # Натискаємо через JavaScript (надійніше)
-            driver.execute_script("arguments[0].click();", show_all_button)
-            time.sleep(2)  # Збільшена пауза для завантаження
-
-        except TimeoutException:
-            print("[WARN] Кнопка 'Всі характеристики' не знайдена")
-        except Exception as e:
-            print(f"[WARN] Помилка при розгортанні: {e}")
-
-    except TimeoutException as e:
-        print(f"[ERROR] Таймаут при завантаженні {url}: {e}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Не вдалось завантажити {url}: {e}")
+        el = driver.find_element(by, locator)
+        return el.text.strip()
+    except NoSuchElementException:
         return None
 
-    product['link'] = url
 
-    # ==================== Назва товару ====================
-    title = None
-    try:
-        title_element = driver.find_element(By.XPATH, "//div[@id='br-pr-1']/h1")  # ⚠️
-        title = title_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено назву товару")
+def get_price_or_none(driver, locator):
+    """Повертає число-ціну або None"""
+    txt = get_text_or_none(driver, By.XPATH, locator)
+    return _parse_price(txt) if txt else None
 
-    product['title'] = title
-    product['full_name'] = title
 
-    # ==================== Колір ====================
-    color = None
-    try:
-        color_element = driver.find_element(
-            By.XPATH,
-            "//div[@class='br-pr-chr-item']//div[./span[normalize-space(text())='Колір']]/span[2]"  # ⚠️
-        )
-        color = color_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено колір")
-    product['color'] = color
-
-    # ==================== Об'єм пам'яті ====================
-    memory = None
-    try:
-        memory_element = driver.find_element(
-            By.XPATH,
-            "//span[contains(text(), 'Вбудована пам')]/following-sibling::span[1]"  # ⚠️
-        )
-        memory = memory_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено пам'ять")
-    product['memory'] = memory
-
-    # ==================== Продавець ====================
-    vendor = None
-    try:
-        vendor_element = driver.find_element(
-            By.XPATH,
-            "//div[@class='delivery-target']//strong"  # ⚠️
-        )
-        vendor = vendor_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено продавця")
-    product['vendor'] = vendor
-
-    # ==================== Ціна ====================
-    price = None
-    try:
-        price_element = driver.find_element(
-            By.XPATH,
-            "//div[@class='br-pr-np']//div/span[1]"  # ⚠️
-        )
-        price = _parse_price(price_element.text)
-    except NoSuchElementException:
-        print("[WARN] Не знайдено ціну")
-    product['price'] = price
-
-    # ==================== Акційна ціна ====================
-    discount_price = None
-    try:
-        discount_element = driver.find_element(
-            By.XPATH,
-            "//div[@class='br-pr-np-hz']//div/span[1]"  # ⚠️
-        )
-        discount_price = _parse_price(discount_element.text)
-    except NoSuchElementException:
-        discount_price = price
-    product['discount_price'] = discount_price
-
-    # ==================== Всі фото товару ====================
+def get_photos(driver, url):
+    """Збирає всі фото товару"""
     photos = []
     try:
-        img_elements = driver.find_elements(
-            By.XPATH,
-            "//img[@class='zoomImg']"  # ⚠️
-        )
+        img_elements = driver.find_elements(By.XPATH, "//img[@class='zoomImg']")
         for img in img_elements:
-            # Спробуйте різні атрибути: data-src, data-large, src
             src = img.get_attribute('data-big-picture-src') or \
                   img.get_attribute('data-src') or \
                   img.get_attribute('src')
@@ -221,113 +112,124 @@ def parse_single_product(url, driver, timeout=12):
                 elif not src.startswith('http'):
                     src = urljoin(url, src)
                 photos.append(src)
-    except Exception as e:
-        print(f"[WARN] Помилка збору фото: {e}")
+    except Exception:
+        pass
+    return _unique_preserve_order(photos)
 
-    product['photos'] = _unique_preserve_order(photos)
+
+# ==================== PARSER ====================
+
+def parse_single_product(url, driver, timeout=12):
+    product = {}
+
+    try:
+        driver.get(url)
+
+        # Чекаємо на завантаження основного контенту
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.XPATH, "//h1"))
+        )
+        time.sleep(2)
+
+        # Перехід до секції "Характеристики"
+        try:
+            char_link = driver.find_element(By.XPATH, "//a[@href='#br-characteristics']")
+            driver.execute_script("arguments[0].click();", char_link)
+            time.sleep(1)
+        except Exception:
+            pass
+
+        # Розгортаємо всі характеристики
+        try:
+            show_all_button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CLASS_NAME, "br-prs-button"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", show_all_button)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", show_all_button)
+            time.sleep(2)
+        except TimeoutException:
+            pass
+        except Exception:
+            pass
+
+    except TimeoutException:
+        print(f"[ERROR] Таймаут при завантаженні {url}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Не вдалось завантажити {url}: {e}")
+        return None
+
+    product["link"] = url
+
+    # ==================== Назва товару ====================
+    product["title"] = get_text_or_none(driver, By.XPATH, "//div[@id='br-pr-1']/h1")
+    product["full_name"] = product["title"]
+
+    # ==================== Основні характеристики (mapping) ====================
+    field_map = {
+        "color": "//div[@class='br-pr-chr-item']//div[./span[normalize-space(text())='Колір']]/span[2]",
+        "memory": "//span[contains(text(), 'Вбудована пам')]/following-sibling::span[1]",
+        "article": "//span[normalize-space(text())='Артикул']/following-sibling::span[1]",
+        "diagonal": "//span[normalize-space(text())='Діагональ екрану']/following-sibling::span[1]",
+        "resolution": "//span[normalize-space(text())='Роздільна здатність екрану']/following-sibling::span[1]",
+    }
+
+    for key, xpath in field_map.items():
+        product[key] = get_text_or_none(driver, By.XPATH, xpath)
+
+    # ==================== Продавець ====================
+    product["vendor"] = get_text_or_none(driver, By.XPATH, "//div[@class='delivery-target']//strong")
+
+    # ==================== Ціна ====================
+    product["price"] = get_price_or_none(driver, "//div[@class='br-pr-np']//div/span[1]")
+
+    # ==================== Акційна ціна ====================
+    product["discount_price"] = get_price_or_none(driver, "//div[@class='br-pr-np-hz']//div/span[1]") \
+                                or product["price"]
+
+    # ==================== Фото ====================
+    product["photos"] = get_photos(driver, url)
 
     # ==================== Код товару ====================
-    code = None
     try:
-        code_element = driver.find_element(
-            By.XPATH,
-            "//div[@id='product_code']//span[contains(@class,'br-pr-code-val')]"
+        code_el = driver.find_element(
+            By.XPATH, "//div[@id='product_code']//span[contains(@class,'br-pr-code-val')]"
         )
-        code = code_element.get_attribute("textContent").strip()
+        product["code"] = code_el.get_attribute("textContent").strip()
     except NoSuchElementException:
-        print("[WARN] Не знайдено код товару")
-    product['code'] = code
+        product["code"] = None
 
     # ==================== Кількість відгуків ====================
-    reviews_count = 0
     try:
-        reviews_element = driver.find_element(
-            By.XPATH,
-            "//a[@href='#reviews-list']/span"  # ⚠️
-        )
-        reviews_count = int(reviews_element.text.strip())
+        reviews_el = driver.find_element(By.XPATH, "//a[@href='#reviews-list']/span")
+        product["reviews_count"] = int(reviews_el.text.strip())
     except (NoSuchElementException, ValueError):
-        pass
-    product['reviews_count'] = reviews_count
+        product["reviews_count"] = None
 
-    # ==================== Артикул ====================
-    article = None
-    try:
-        article_element = driver.find_element(
-            By.XPATH,
-            "//span[normalize-space(text())='Артикул']/following-sibling::span[1]"  # ⚠️
-        )
-        article = article_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено артикул")
-    product['article'] = article
-
-    # ==================== Діагональ екрану ====================
-    diagonal = None
-    try:
-        diagonal_element = driver.find_element(
-            By.XPATH,
-            "//span[normalize-space(text())='Діагональ екрану']/following-sibling::span[1]"  # ⚠️
-        )
-        diagonal = diagonal_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено діагональ")
-    product['diagonal'] = diagonal
-
-    # ==================== Роздільна здатність ====================
-    resolution = None
-    try:
-        resolution_element = driver.find_element(
-            By.XPATH,
-            "//span[normalize-space(text())='Роздільна здатність екрану']/following-sibling::span[1]"  # ⚠️
-        )
-        resolution = resolution_element.text.strip()
-    except NoSuchElementException:
-        print("[WARN] Не знайдено роздільну здатність")
-    product['resolution'] = resolution
-
-    # ==================== Всі характеристики ====================
+    # ==================== Усі характеристики ====================
     specifications = {}
     try:
-
-        # Знаходимо всі блоки з характеристиками
-        char_blocks = driver.find_elements(
-            By.XPATH,
-            "//div[contains(@class, 'br-pr-chr-item')]"
-        )
-
+        char_blocks = driver.find_elements(By.XPATH, "//div[contains(@class, 'br-pr-chr-item')]")
         for block in char_blocks:
-            try:
-                # В кожному блоці шукаємо всі пари ключ-значення
-                rows = block.find_elements(By.XPATH, ".//div/div")
-
-                for row in rows:
-                    try:
-                        spans = row.find_elements(By.XPATH, ".//span")
-
-                        if len(spans) >= 2:
-                            key = spans[0].text.strip()
-
-                            # Перевіряємо чи є посилання в значенні
-                            links = spans[1].find_elements(By.TAG_NAME, "a")
-                            if links:
-                                value = ", ".join(a.text.strip() for a in links if a.text.strip())
-                            else:
-                                value = spans[1].text.strip()
-
-                            if key and value:
-                                specifications[key] = value
-
-                    except (NoSuchElementException, IndexError):
+            rows = block.find_elements(By.XPATH, ".//div/div")
+            for row in rows:
+                spans = row.find_elements(By.XPATH, ".//span")
+                if len(spans) >= 2:
+                    key = spans[0].text.strip()
+                    if not key:
                         continue
+                    links = spans[1].find_elements(By.TAG_NAME, "a")
+                    if links:
+                        value = ", ".join(a.text.strip() for a in links if a.text.strip())
+                    else:
+                        value = spans[1].text.strip()
+                    if value:
+                        specifications[key] = value
+    except Exception:
+        pass
 
-            except Exception as e:
-                continue
-
-    except Exception as e:
-        print(f"[WARN] Помилка збору характеристик: {e}")
-
-    product['specifications'] = specifications
+    product["specifications"] = specifications
 
     return product
 
