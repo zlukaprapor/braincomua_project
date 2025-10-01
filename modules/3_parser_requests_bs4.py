@@ -57,10 +57,7 @@ def _unique_preserve_order(seq):
 
 # ------------------ PARSER ------------------
 def parse_single_product(url, headers=HEADERS, timeout=12):
-    """
-    Парсить одну сторінку товару і повертає словник з можливими полями.
-    Замінюй CSS-селектори на потрібні для цільового сайту.
-    """
+
     product = {}
     try:
         resp = requests.get(url, headers=headers, timeout=timeout)
@@ -75,134 +72,161 @@ def parse_single_product(url, headers=HEADERS, timeout=12):
     product['link'] = url
 
     # Полное название товара
-    title = None
-    if soup.select_one('h1'):
-        title = soup.select_one('h1').get_text(strip=True)
-    elif soup.select_one('.product-title'):
-        title = soup.select_one('.product-title').get_text(strip=True)
-    product['title'] = title
-    product['full_name'] = title
+    try:
+        title = soup.select_one("h1") or soup.select_one(".product-title")
+        product["title"] = title.get_text(strip=True) if title else None
+        product["full_name"] = product["title"]
+    except AttributeError:
+        product["title"] = None
+        product["full_name"] = None
+
+    # --- collect all characteristics in dictionary ---
+    characteristics = {}
+    try:
+        for span in soup.select(".br-pr-chr-item span"):
+            try:
+                next_span = span.find_next_sibling("span")
+                if next_span:
+                    key = span.get_text(strip=True)
+                    value = next_span.get_text(strip=True)
+                    characteristics[key] = value
+            except AttributeError:
+                continue
+    except Exception:
+        characteristics = {}
 
     # Колір
-    color = None
-    for span in soup.select('.br-pr-chr-item span'):
-        if span.get_text(strip=True) == 'Колір':
-            next_span = span.find_next_sibling('span')
-            if next_span:
-                color = next_span.get_text(strip=True)
-            break
-    product['color'] = color
+    try:
+        product["color"] = characteristics.get("Колір") or characteristics.get("Цвет")
+    except AttributeError:
+        product["color"] = None
 
     # Объем памяти
-    memory = None
-    for span in soup.select('.br-pr-chr-item span'):
-        if span.get_text(strip=True) == 'Вбудована пам\'ять':
-            next_span = span.find_next_sibling('span')
-            if next_span:
-                memory = next_span.get_text(strip=True)
-            break
-    product['memory'] = memory
+    try:
+        product["memory"] = characteristics.get("Вбудована пам'ять") or characteristics.get("Встроенная память")
+    except AttributeError:
+        product["memory"] = None
+
+    # Серия
+    try:
+        product["article"] = characteristics.get("Артикул")
+    except AttributeError:
+        product["article"] = None
+
+    # Диагональ экрана
+    try:
+        product["diagonal"] = characteristics.get("Діагональ екрану") or characteristics.get("Диагональ экрана")
+    except AttributeError:
+        product["diagonal"] = None
+
+    # Разрешение дисплея
+    try:
+        product["resolution"] = characteristics.get("Роздільна здатність екрану") or characteristics.get(
+            "Разрешение дисплея")
+    except AttributeError:
+        product["resolution"] = None
 
     # Продавец
-    vendor = None
-    v_sel = soup.select_one('.br-pr-del-type .delivery-target strong') # шукаємо конкретно блок з адресою магазину
-    if v_sel:
-        vendor = v_sel.get_text(strip=True)
-    product['vendor'] = vendor
+    try:
+        v_sel = soup.select_one(".br-pr-del-type .delivery-target strong")
+        product["vendor"] = v_sel.get_text(strip=True) if v_sel else None
+    except AttributeError:
+        product["vendor"] = None
 
     # Цена
     # Основна ціна
-    v_sel = soup.select_one('.br-pr-price.main-price-block .br-pr-np > div > span')
-    price = _parse_price(v_sel.get_text(strip=True)) if v_sel else None
-    product['price'] = price
+    try:
+        p_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np > div > span")
+        product["price"] = _parse_price(p_sel.get_text(strip=True)) if p_sel else None
+    except AttributeError:
+        product["price"] = None
 
     # Акційна ціна (якщо є)
-    v_sel = soup.select_one('.br-pr-price.main-price-block .br-pr-np-hz > div > span')
-    discount_price = _parse_price(v_sel.get_text(strip=True)) if v_sel else None
-    product['discount_price'] = discount_price if discount_price else price
+    try:
+        d_sel = soup.select_one(".br-pr-price.main-price-block .br-pr-np-hz > div > span")
+        discount_price = _parse_price(d_sel.get_text(strip=True)) if d_sel else None
+        product["discount_price"] = discount_price if discount_price else product["price"]
+    except AttributeError:
+        product["discount_price"] = product["price"]
 
     # Все фото товара. Здесь нужно собрать ссылки на фото и сохранить в список
-    photos = []
-
-    for img in soup.select('img.dots-image'):
-        src = img.get('data-big-picture-src') or img.get('src')
-        if src:
-            src = src.strip()
-            if src.startswith('//'):
-                src = 'https:' + src
-            elif src.startswith('/'):
-                src = urljoin(url, src)
-            elif not src.startswith('http'):
-                src = urljoin(url, src)
-            photos.append(src)
-
-    # Видаляємо дублікати, зберігаючи порядок
-    product['photos'] = _unique_preserve_order(photos)
+    try:
+        photos = []
+        for img in soup.select("img.dots-image"):
+            src = img.get("data-big-picture-src") or img.get("src")
+            if src:
+                src = src.strip()
+                if src.startswith("//"):
+                    src = "https:" + src
+                elif src.startswith("/"):
+                    src = urljoin(url, src)
+                elif not src.startswith("http"):
+                    src = urljoin(url, src)
+                photos.append(src)
+        product["photos"] = _unique_preserve_order(photos)
+    except Exception:
+        product["photos"] = []
 
     # Код товара
-    code = None
-    code_sel = soup.select_one('#product_code .br-pr-code-val')
-    if code_sel:
-        code = code_sel.get_text(strip=True)
-    product['code'] = code
+    try:
+        code_sel = soup.select_one("#product_code .br-pr-code-val")
+        product["code"] = code_sel.get_text(strip=True) if code_sel else None
+    except AttributeError:
+        product["code"] = None
 
     # Кол-во отзывов
-    reviews_count = 0  # default, якщо відгуків немає
-    rev_sel = soup.select_one('a.scroll-to-element span')
-    if rev_sel:
-        try:
-            reviews_count = int(rev_sel.get_text(strip=True))
-        except ValueError:
-            pass  # залишаємо 0, якщо текст не число
-    product['reviews_count'] = reviews_count
+    try:
+        rev_sel = soup.select_one("a.scroll-to-element span")
+        product["reviews_count"] = int(rev_sel.get_text(strip=True)) if rev_sel else None
+    except (AttributeError, ValueError):
+        product["reviews_count"] = None
 
     # Серия
-    article = None
-    for span in soup.select('.br-pr-chr-item span'):
-        if span.get_text(strip=True) == 'Артикул':
-            next_span = span.find_next_sibling('span')
-            if next_span:
-                article = next_span.get_text(strip=True)
-            break
-    product['article'] = article
+    # article = None
+    # for span in soup.select('.br-pr-chr-item span'):
+    #     if span.get_text(strip=True) == 'Артикул':
+    #         next_span = span.find_next_sibling('span')
+    #         if next_span:
+    #             article = next_span.get_text(strip=True)
+    #         break
+    # product['article'] = article
 
     # Диагональ экрана
-    diagonal = None
-    for span in soup.select('.br-pr-chr-item span'):
-        if span.get_text(strip=True) == 'Діагональ екрану':
-            next_span = span.find_next_sibling('span')
-            if next_span:
-                diagonal = next_span.get_text(strip=True)
-            break
-    product['diagonal'] = diagonal
+    # diagonal = None
+    # for span in soup.select('.br-pr-chr-item span'):
+    #     if span.get_text(strip=True) == 'Діагональ екрану':
+    #         next_span = span.find_next_sibling('span')
+    #         if next_span:
+    #             diagonal = next_span.get_text(strip=True)
+    #         break
+    # product['diagonal'] = diagonal
 
     # Разрешение дисплея
-    resolution = None
-    for span in soup.select('.br-pr-chr-item span'):
-        if span.get_text(strip=True) == 'Роздільна здатність екрану':
-            next_span = span.find_next_sibling('span')
-            if next_span:
-                resolution = next_span.get_text(strip=True)
-            break
-    product['resolution'] = resolution
+    # resolution = None
+    # for span in soup.select('.br-pr-chr-item span'):
+    #     if span.get_text(strip=True) == 'Роздільна здатність екрану':
+    #         next_span = span.find_next_sibling('span')
+    #         if next_span:
+    #             resolution = next_span.get_text(strip=True)
+    #         break
+    # product['resolution'] = resolution
 
     # Характеристики товара. Все характеристики на вкладке. Характеристики собрать как словарь
     specifications = {}
-
-    for item in soup.select('.br-pr-chr-item'):
-        for row in item.select('div > div'):
-            key_span = row.find('span')
-            value_span = key_span.find_next_sibling('span') if key_span else None
-            if key_span and value_span:
-                # Беремо текст, очищаємо пробіли та коми
-                key = key_span.get_text(strip=True)
-                # Можливо у значенні є <a> або просто текст
-                value = ', '.join(a.get_text(strip=True) for a in value_span.find_all('a'))
-                if not value:  # якщо посилань немає, беремо просто текст
-                    value = value_span.get_text(strip=True)
-                specifications[key] = value
-
-    product['specifications'] = specifications
+    try:
+        for item in soup.select(".br-pr-chr-item"):
+            for row in item.select("div > div"):
+                key_span = row.find("span")
+                value_span = key_span.find_next_sibling("span") if key_span else None
+                if key_span and value_span:
+                    key = key_span.get_text(strip=True)
+                    value = ", ".join(a.get_text(strip=True) for a in value_span.find_all("a"))
+                    if not value:
+                        value = value_span.get_text(strip=True)
+                    specifications[key] = value
+    except Exception:
+        specifications = {}
+    product["specifications"] = specifications
 
     return product
 
